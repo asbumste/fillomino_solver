@@ -10,3 +10,6 @@ edition = "2018"
 nom = "6.0"
 structopt = "0.3"
 petgraph = "0.5"
+
+[dev-dependencies]
+rstest = "0.7"

@@ -16,4 +16,7 @@ fn main() {
     println!("Read Board:\n{}", board);
     let results = board.solve();
     println!("Found {} results", results.len());
+    for board in results {
+        println!("Result\n{}", board);
+    }
 }
