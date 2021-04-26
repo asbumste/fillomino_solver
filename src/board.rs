@@ -90,10 +90,10 @@ impl Board {
         // Iterate over the grid and create a node for each point
         let mut graph: NodeGraph = Graph::new_undirected();
         let mut last_row: Vec<NodeIndex> = Vec::new();
-        for (y, row) in grid.into_iter().enumerate() {
+        for (y, row) in grid.iter().enumerate() {
             let mut this_row: Vec<NodeIndex> = Vec::new();
             let mut last_node: Option<NodeIndex> = None;
-            for (x, value) in row.into_iter().enumerate() {
+            for (x, value) in row.iter().enumerate() {
                 let node = match value {
                     0 => graph.add_node(Node::new(None, vec![Pos::new(x, y)], 1)),
                     n => graph.add_node(Node::new(Some(*n), vec![Pos::new(x, y)], 1)),
@@ -149,9 +149,13 @@ impl Board {
 
     fn solve_graph(graph: &mut NodeGraph) -> Result<Vec<NodeGraph>, &'static str> {
         while !Self::is_solved(graph) {
-            let updated = Self::single_neighbour(graph)?;
+            let mut updated = Self::single_neighbour(graph)?;
+            updated |= Self::value_search(graph)?;
             if !updated {
-                return Self::pulse(graph);
+                /*Self::draw_graph(&graph);
+                Self::draw_grid(&graph);
+                break;*/
+                return Ok(Self::pulse(graph));
             }
         }
         if Self::is_solved(graph) {
@@ -191,17 +195,48 @@ impl Board {
         Ok(updated_once)
     }
 
+    // merge empty nodes with only one valued node in range
+    fn value_search(graph: &mut NodeGraph) -> Result<bool, &'static str> {
+        let mut updated = true;
+        let mut updated_once = false;
+        while updated {
+            updated = false;
+            for node_idx in graph.node_indices() {
+                if graph[node_idx].value.is_none()
+                    || graph[node_idx].value.unwrap() < graph[node_idx].size
+                {
+                    let reachable = Self::get_reachable(graph, node_idx);
+                    if reachable.is_empty() {
+                        return Err("No valid neighbours");
+                    }
+                    if reachable.len() == 1 {
+                        // Only one node, but easiest to iterate to get to it
+                        for other_idx in reachable {
+                            eprintln!(
+                                "value_search merging: {} {}",
+                                graph[node_idx], graph[other_idx]
+                            );
+                            Self::merge(graph, node_idx, other_idx)?;
+                        }
+                        updated = true;
+                        break;
+                    }
+                }
+            }
+            if updated {
+                updated_once = true;
+            }
+        }
+        Ok(updated_once)
+    }
+
+    // return Option<NodeIndex> if merging non-is_adjacent
+    // Allows caller to "pulse" paths
     fn merge(
         graph: &mut NodeGraph,
         mut index: NodeIndex,
         mut other_idx: NodeIndex,
-    ) -> Result<(), &'static str> {
-        // graph.remove_node inis_valids last node index,
-        // so keep lesser index to prevent it from being inis_validd
-        if other_idx < index {
-            std::mem::swap(&mut other_idx, &mut index)
-        }
-
+    ) -> Result<Option<NodeIndex>, &'static str> {
         if graph[index].value.is_none() {
             graph[index].value = graph[other_idx].value;
         }
@@ -220,7 +255,13 @@ impl Board {
                 graph[other_idx].value = graph[index].value;
                 Self::merge_neighbour(graph, other_idx)?;
             }
-            return Ok(());
+            return Ok(Some(other_idx));
+        }
+
+        // graph.remove_node inis_valids last node index,
+        // so keep lesser index to prevent it from being inis_validd
+        if other_idx < index {
+            std::mem::swap(&mut other_idx, &mut index)
         }
 
         graph[index].size += graph[other_idx].size;
@@ -236,13 +277,9 @@ impl Board {
             return Err("Merge would overflow node");
         } else if graph[index].value.is_some() && graph[index].value.unwrap() == graph[index].size {
             // Node is complete, remove all edges
-            let mut neighbours = graph.neighbors(index).detach();
-            while let Some(neighbour_idx) = neighbours.next_node(&graph) {
+            while let Some(neighbour_idx) = graph.neighbors(index).detach().next_node(graph) {
                 graph.remove_edge(graph.find_edge(index, neighbour_idx).unwrap());
             }
-            /*for edge in graph.edges(index) {
-                graph.remove_edge(&edge);
-            }*/
         } else {
             // Add valid neighbours of other_idx to index
             let mut neighbours = graph.neighbors(other_idx).detach();
@@ -263,7 +300,7 @@ impl Board {
         // Merge new neighbours that share a value
         Self::merge_neighbour(graph, index)?;
 
-        Ok(())
+        Ok(None)
     }
 
     fn merge_neighbour(graph: &mut NodeGraph, node_idx: NodeIndex) -> Result<bool, &'static str> {
@@ -311,9 +348,8 @@ impl Board {
         Ok(())
     }
 
-    fn pulse(graph: &NodeGraph) -> Result<Vec<NodeGraph>, &'static str> {
+    fn pulse(graph: &NodeGraph) -> Vec<NodeGraph> {
         let mut results = Vec::new();
-
         for node_idx in graph.node_indices() {
             if graph[node_idx].value.is_none() {
                 /*
@@ -333,14 +369,14 @@ impl Board {
                     let mut g = graph.clone();
                     if Board::merge(&mut g, node_idx, r).is_ok() && Board::is_valid(&g) {
                         eprintln!("Pulsed graph {} and {}", graph[node_idx], graph[r]);
-                        Self::draw_graph(&g);
-                        Self::draw_grid(&g);
+                        //Self::draw_graph(&g);
+                        //Self::draw_grid(&g);
 
                         if let Ok(new_results) = Board::solve_graph(&mut g) {
                             results.extend(new_results);
                         }
                         if !results.is_empty() {
-                            return Ok(results);
+                            return results;
                         }
                     }
                 }
@@ -350,7 +386,7 @@ impl Board {
                 break;
             }
         }
-        Ok(results)
+        results
     }
 
     fn get_node(graph: &NodeGraph, pos: &Pos) -> Option<NodeIndex> {
