@@ -46,17 +46,18 @@ impl Node {
     pub fn new(value: Option<u8>, coord: Vec<Pos>, size: u8) -> Self {
         Node { value, coord, size }
     }
-    pub fn adjacent(graph: &NodeGraph, node1: NodeIndex, node2: NodeIndex) -> bool {
+
+    pub fn is_adjacent(graph: &NodeGraph, node1: NodeIndex, node2: NodeIndex) -> bool {
         for pos1 in &graph[node1].coord {
             for pos2 in &graph[node2].coord {
                 match (
                     abs_difference(pos1.x, pos2.x),
                     abs_difference(pos1.y, pos2.y),
                 ) {
-                    (0, _) => {
+                    (0, 1) => {
                         return true;
                     }
-                    (_, 0) => {
+                    (1, 0) => {
                         return true;
                     }
                     (_, _) => (),
@@ -85,17 +86,14 @@ pub struct Board {
 }
 
 impl Board {
-    pub fn new(width: usize, height: usize, grid: &Vec<Vec<u8>>) -> Self {
+    pub fn new(width: usize, height: usize, grid: &[Vec<u8>]) -> Self {
         // Iterate over the grid and create a node for each point
         let mut graph: NodeGraph = Graph::new_undirected();
-        let mut y: usize = 0;
         let mut last_row: Vec<NodeIndex> = Vec::new();
-        for row in grid {
-            let mut x: usize = 0;
+        for (y, row) in grid.into_iter().enumerate() {
             let mut this_row: Vec<NodeIndex> = Vec::new();
             let mut last_node: Option<NodeIndex> = None;
-
-            for value in row {
+            for (x, value) in row.into_iter().enumerate() {
                 let node = match value {
                     0 => graph.add_node(Node::new(None, vec![Pos::new(x, y)], 1)),
                     n => graph.add_node(Node::new(Some(*n), vec![Pos::new(x, y)], 1)),
@@ -119,16 +117,14 @@ impl Board {
                 }
                 last_node = Some(node);
                 this_row.push(node);
-
-                x += 1;
             }
             last_row = this_row;
-            y += 1;
         }
 
         Self::merge_neighbours(&mut graph).expect("Failed to simplify");
 
         Self::draw_graph(&graph);
+        Self::draw_grid(&graph);
         if !Self::is_valid(&graph) {
             panic!("Input not valid");
         }
@@ -141,6 +137,7 @@ impl Board {
 
     pub fn solve(&self) -> Vec<Board> {
         Board::solve_graph(&mut self.graph.clone())
+            .unwrap_or_default()
             .iter()
             .map(|graph| Self {
                 width: self.width,
@@ -150,43 +147,80 @@ impl Board {
             .collect()
     }
 
-    fn solve_graph(graph: &mut NodeGraph) -> Vec<NodeGraph> {
-        if Self::is_solved(graph) {
-            vec![graph.clone()]
-        } else if let Ok(results) = Self::pulse(graph) {
-            results
-        } else {
-            Vec::new()
+    fn solve_graph(graph: &mut NodeGraph) -> Result<Vec<NodeGraph>, &'static str> {
+        while !Self::is_solved(graph) {
+            let updated = Self::single_neighbour(graph)?;
+            if !updated {
+                return Self::pulse(graph);
+            }
         }
+        if Self::is_solved(graph) {
+            Ok(vec![graph.clone()])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Merge nodes if they only has one neighbour
+    fn single_neighbour(graph: &mut NodeGraph) -> Result<bool, &'static str> {
+        let mut updated = true;
+        let mut updated_once = false;
+        while updated {
+            updated = false;
+            for node_idx in graph.node_indices() {
+                if graph.neighbors(node_idx).count() == 1 {
+                    let neighbour_idx = graph
+                        .neighbors(node_idx)
+                        .detach()
+                        .next_node(&graph)
+                        .unwrap();
+
+                    eprintln!(
+                        "single_neighbour merging: {} {}",
+                        graph[node_idx], graph[neighbour_idx]
+                    );
+                    Self::merge(graph, node_idx, neighbour_idx)?;
+                    updated = true;
+                    break;
+                }
+            }
+            if updated {
+                updated_once = true;
+            }
+        }
+        Ok(updated_once)
     }
 
     fn merge(
         graph: &mut NodeGraph,
         mut index: NodeIndex,
         mut other_idx: NodeIndex,
-    ) -> Result<NodeIndex, &'static str> {
+    ) -> Result<(), &'static str> {
         // graph.remove_node inis_valids last node index,
         // so keep lesser index to prevent it from being inis_validd
         if other_idx < index {
-            let tmp = other_idx;
-            other_idx = index;
-            index = tmp;
+            std::mem::swap(&mut other_idx, &mut index)
         }
 
         if graph[index].value.is_none() {
             graph[index].value = graph[other_idx].value;
         }
 
-        // Set the value, but don't merge nodes that aren't adjacent
+        // Set the value, but don't merge nodes that aren't is_adjacent
         // TODO "pulse" each path between nodes
-        if !Node::adjacent(graph, index, other_idx) {
-            // Guarantees both nodes are set, by above block
+        if !Node::is_adjacent(graph, index, other_idx) {
             eprintln!(
                 "Setting value, but not merging non-adjacent nodes {} {}",
                 graph[index], graph[other_idx]
             );
-            graph[other_idx].value = graph[index].value;
-            return Ok(index);
+            if graph[other_idx].value == graph[index].value {
+                // graph[index] was newly set
+                Self::merge_neighbour(graph, index)?;
+            } else {
+                graph[other_idx].value = graph[index].value;
+                Self::merge_neighbour(graph, other_idx)?;
+            }
+            return Ok(());
         }
 
         graph[index].size += graph[other_idx].size;
@@ -195,21 +229,30 @@ impl Board {
         graph[index].coord.extend(other_coord);
 
         if graph[index].value.is_some() && graph[index].value.unwrap() < graph[index].size {
-            /*eprintln!(
+            eprintln!(
                 "Merge would overflow node {} {}",
                 graph[index], graph[other_idx]
-            );*/
+            );
             return Err("Merge would overflow node");
-        }
-
-        // Add valid neighbours of other_idx to index
-        let mut neighbours = graph.neighbors(other_idx).detach();
-        while let Some(neighbour_idx) = neighbours.next_node(&graph) {
-            if neighbour_idx != index {
-                match (graph[index].value, graph[neighbour_idx].value) {
-                    (Some(a), Some(b)) if a != b => continue,
-                    _ => {
-                        graph.update_edge(index, neighbour_idx, 1);
+        } else if graph[index].value.is_some() && graph[index].value.unwrap() == graph[index].size {
+            // Node is complete, remove all edges
+            let mut neighbours = graph.neighbors(index).detach();
+            while let Some(neighbour_idx) = neighbours.next_node(&graph) {
+                graph.remove_edge(graph.find_edge(index, neighbour_idx).unwrap());
+            }
+            /*for edge in graph.edges(index) {
+                graph.remove_edge(&edge);
+            }*/
+        } else {
+            // Add valid neighbours of other_idx to index
+            let mut neighbours = graph.neighbors(other_idx).detach();
+            while let Some(neighbour_idx) = neighbours.next_node(&graph) {
+                if neighbour_idx != index {
+                    match (graph[index].value, graph[neighbour_idx].value) {
+                        (Some(a), Some(b)) if a != b => continue,
+                        _ => {
+                            graph.update_edge(index, neighbour_idx, 1);
+                        }
                     }
                 }
             }
@@ -218,21 +261,9 @@ impl Board {
         graph.remove_node(other_idx);
 
         // Merge new neighbours that share a value
-        let mut updated = true;
-        while updated {
-            updated = false;
-            let mut neighbours = graph.neighbors(index).detach();
-            while let Some(neighbour_idx) = neighbours.next_node(&graph) {
-                if graph[index].value.is_some() && graph[index].value == graph[neighbour_idx].value
-                {
-                    index = Self::merge(graph, index, neighbour_idx)?;
-                    updated = true;
-                    break;
-                }
-            }
-        }
+        Self::merge_neighbour(graph, index)?;
 
-        Ok(index)
+        Ok(())
     }
 
     fn merge_neighbour(graph: &mut NodeGraph, node_idx: NodeIndex) -> Result<bool, &'static str> {
@@ -244,7 +275,7 @@ impl Board {
             while let Some(n) = neighbors.next_node(graph) {
                 match (graph[node_idx].value, graph[n].value) {
                     (Some(v), Some(u)) if v == u => {
-                        Board::merge(graph, node_idx, n)?;
+                        Self::merge(graph, node_idx, n)?;
                         updated = true;
                         break;
                     }
@@ -265,7 +296,7 @@ impl Board {
     }
 
     fn merge_neighbours(graph: &mut NodeGraph) -> Result<(), &'static str> {
-        // Merge adjacent nodes with the same value
+        // Merge is_adjacent nodes with the same value
         // Remove edges between nodes with differing values
         let mut updated = true; // Only update a single node at a time, removing nodes inis_valids indices
         while updated {
@@ -280,11 +311,12 @@ impl Board {
         Ok(())
     }
 
-    fn pulse(graph: &mut NodeGraph) -> Result<Vec<NodeGraph>, &'static str> {
+    fn pulse(graph: &NodeGraph) -> Result<Vec<NodeGraph>, &'static str> {
         let mut results = Vec::new();
 
         for node_idx in graph.node_indices() {
             if graph[node_idx].value.is_none() {
+                /*
                 for i in 1..10 {
                     let mut g = graph.clone();
                     g[node_idx].value = Some(i);
@@ -296,24 +328,22 @@ impl Board {
                             return Ok(results);
                         }
                     }
-                }
-                /* TODO only do reachable unstead of all values
-                eprintln!("Reachable from: {}", graph[node_idx]);
-                let reachable = Self::get_reachable(graph, node_idx);
-                for r in reachable {
-                    eprintln!("\t{}", graph[r]);
+                }*/
+                for r in Self::get_reachable(graph, node_idx) {
                     let mut g = graph.clone();
-                    if Board::merge(&mut g, node_idx, r).is_ok() {
-                        if Board::is_valid(&g) {                                                        ;
-                            results.extend(Board::solve_graph(&mut g));
-                            if !results.is_empty() {
-                                return Ok(results);
-                            }
+                    if Board::merge(&mut g, node_idx, r).is_ok() && Board::is_valid(&g) {
+                        eprintln!("Pulsed graph {} and {}", graph[node_idx], graph[r]);
+                        Self::draw_graph(&g);
+                        Self::draw_grid(&g);
+
+                        if let Ok(new_results) = Board::solve_graph(&mut g) {
+                            results.extend(new_results);
+                        }
+                        if !results.is_empty() {
+                            return Ok(results);
                         }
                     }
-
                 }
-                */
 
                 // If there are no valid values for this node,
                 //continuing to search isn't going to help
@@ -404,8 +434,8 @@ impl Board {
         }
     }
 
-    // Get all nodes that are adjacent to node_idx that aren't neighbours
-    fn get_adjacent(graph: &NodeGraph, node_idx: NodeIndex) -> HashSet<NodeIndex> {
+    // Get all nodes that are is_adjacent to node_idx that aren't neighbours
+    fn get_is_adjacent(graph: &NodeGraph, node_idx: NodeIndex) -> HashSet<NodeIndex> {
         let mut check_pos = HashSet::new();
         for pos in &graph[node_idx].coord {
             check_pos.insert(Pos::new(pos.x + 1, pos.y));
@@ -442,30 +472,43 @@ impl Board {
             // Cost Some(n) -> None = 1000,
             // None -> None = 1
             // A valid path only has a single Some(n) -> None
-            if Self::get_reachable(graph, node_idx).is_empty() {
-                //eprintln!("Node not valid, no reachable");
-                false
-            } else {
-                true
-            }
+            !Self::get_reachable(graph, node_idx).is_empty()
         } else {
             let mut size = graph[node_idx].size;
             for idx in Self::get_reachable(graph, node_idx) {
-                if graph[idx].value.is_some() && graph[idx].value != graph[node_idx].value {
-                    //eprintln!("Node not valid, numbered neighbour: {} {}", graph[node_idx], graph[idx]);
-                    return false;
+                if graph[idx].value.is_some() {
+                    if graph[idx].value != graph[node_idx].value {
+                        eprintln!(
+                            "Node not valid, numbered neighbour: {} {}",
+                            graph[node_idx], graph[idx]
+                        );
+                        return false;
+                    } else {
+                        // TODO need to add it's reachable as well...
+                        for idx2 in Self::get_reachable(graph, idx) {
+                            if idx2 != idx {
+                                size += graph[idx2].size;
+                            }
+                        }
+                    }
                 }
+
                 size += graph[idx].size;
             }
-            // TODO need to check that no two nodes with the same value are adjacent
+            // TODO need to check that no two nodes with the same value are is_adjacent
+            //TODO fails on dummy2, test_is_valid
+            //size could be < value, but one of reachable could be value and extend reachable & size
             if size < graph[node_idx].value.unwrap() {
-                //eprintln!("Node not valid, overflow: {}", graph[node_idx]);
+                eprintln!("Node not valid, overflow: {}", graph[node_idx]);
                 false
             } else {
-                // check adjacent nodes that aren't neighbours for value == value
-                for adj in Self::get_adjacent(graph, node_idx) {
+                // check is_adjacent nodes that aren't neighbours for value == value
+                for adj in Self::get_is_adjacent(graph, node_idx) {
                     if graph[adj].value.is_some() && graph[adj].value == graph[node_idx].value {
-                        //eprintln!("Node not valid, adjacent same value: {} {}", graph[node_idx], graph[adj]);
+                        eprintln!(
+                            "Node not valid, is_adjacent same value: {} {}",
+                            graph[node_idx], graph[adj]
+                        );
                         return false;
                     }
                 }
@@ -512,7 +555,7 @@ impl fmt::Display for Board {
                     f,
                     "{} ",
                     self.graph[Self::get_node(&self.graph, &Pos::new(x, y))
-                        .expect(&format!("No node at index {}", Pos::new(x, y)))]
+                        .unwrap_or_else(|| panic!("No node at index {}", Pos::new(x, y)))]
                     .value
                     .unwrap_or(0)
                 )?;
@@ -526,7 +569,7 @@ impl fmt::Display for Board {
 #[test]
 fn test_is_solved() {
     assert_eq!(
-        Board::is_solved(&Board::new(2, 2, &vec![vec![0, 1], vec![2, 2,],]).graph),
+        Board::is_solved(&Board::new(2, 2, &vec![vec![0, 1], vec![3, 3,],]).graph),
         false
     );
     assert_eq!(
@@ -536,7 +579,49 @@ fn test_is_solved() {
 }
 
 #[test]
-fn test_merge() {}
+fn test_is_valid() {
+    assert_eq!(
+        Board::is_valid(
+            &Board::new(
+                8,
+                8,
+                &vec![
+                    vec![6, 0, 7, 1, 7, 0, 0, 1],
+                    vec![0, 1, 0, 0, 0, 0, 0, 0],
+                    vec![0, 6, 7, 7, 0, 1, 0, 0],
+                    vec![0, 1, 7, 7, 8, 8, 3, 3],
+                    vec![4, 4, 4, 8, 8, 8, 3, 1],
+                    vec![1, 4, 1, 0, 7, 1, 0, 0],
+                    vec![0, 5, 0, 0, 0, 0, 6, 0],
+                    vec![1, 0, 0, 1, 0, 0, 6, 0],
+                ]
+            )
+            .graph
+        ),
+        false
+    );
+
+    assert_eq!(
+        Board::is_valid(
+            &Board::new(
+                8,
+                8,
+                &vec![
+                    vec![1, 5, 5, 5, 1, 2, 1, 8],
+                    vec![7, 5, 5, 4, 4, 2, 8, 7],
+                    vec![5, 7, 1, 4, 4, 7, 8, 8],
+                    vec![5, 7, 0, 0, 0, 1, 7, 0],
+                    vec![7, 1, 5, 0, 1, 8, 0, 0],
+                    vec![1, 0, 0, 1, 0, 1, 8, 7],
+                    vec![7, 5, 7, 7, 6, 8, 8, 1],
+                    vec![7, 7, 1, 6, 6, 1, 8, 8],
+                ]
+            )
+            .graph
+        ),
+        false
+    );
+}
 
 #[test]
 fn test_reachable() {
@@ -549,5 +634,17 @@ fn test_reachable() {
 
     let reachable = Board::get_reachable(&graph, node_0_0);
     assert_eq!(reachable.len(), 1);
-    assert_eq!(reachable[0], node_0_1);
+    assert_eq!(reachable.contains(&node_0_1), true);
+}
+
+#[test]
+fn test_is_adjacent() {
+    let mut graph: NodeGraph = Graph::new_undirected();
+    let node_2_7 = graph.add_node(Node::new(None, vec![Pos::new(2, 7)], 1));
+    let node_4_7 = graph.add_node(Node::new(None, vec![Pos::new(4, 7)], 1));
+    let node_4_6 = graph.add_node(Node::new(Some(2), vec![Pos::new(4, 6)], 1));
+
+    assert_eq!(Node::is_adjacent(&graph, node_2_7, node_4_7), false);
+    assert_eq!(Node::is_adjacent(&graph, node_2_7, node_4_6), false);
+    assert_eq!(Node::is_adjacent(&graph, node_4_7, node_4_6), true);
 }
