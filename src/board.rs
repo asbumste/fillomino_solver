@@ -1,4 +1,4 @@
-use petgraph::algo::dijkstra;
+use petgraph::algo::{all_simple_paths, dijkstra};
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::Undirected;
@@ -202,9 +202,7 @@ impl Board {
         while updated {
             updated = false;
             for node_idx in graph.node_indices() {
-                if graph[node_idx].value.is_none()
-                    || graph[node_idx].value.unwrap() < graph[node_idx].size
-                {
+                if graph[node_idx].value.is_none() {
                     let reachable = Self::get_reachable(graph, node_idx);
                     if reachable.is_empty() {
                         return Err("No valid neighbours");
@@ -216,7 +214,17 @@ impl Board {
                                 "value_search merging: {} {}",
                                 graph[node_idx], graph[other_idx]
                             );
-                            Self::merge(graph, node_idx, other_idx)?;
+                            if let Some(other_idx) = Self::merge(graph, node_idx, other_idx)? {
+                                //TODO how to return graphs?
+                                let graphs = Self::pulse_path(graph, node_idx, other_idx);
+                                if graphs.is_empty() {
+                                    return Err("Non-Adjacent merge couldn't be resolved");
+                                } else {
+                                    Self::draw_graph(&graphs[0]);
+                                    Self::draw_grid(&graphs[0]);
+                                    panic!("^^^^ Graph found from pulse_path");
+                                }
+                            }
                         }
                         updated = true;
                         break;
@@ -261,7 +269,11 @@ impl Board {
         // graph.remove_node inis_valids last node index,
         // so keep lesser index to prevent it from being inis_validd
         if other_idx < index {
-            std::mem::swap(&mut other_idx, &mut index)
+            std::mem::swap(&mut other_idx, &mut index);
+            // previously made sure value was set, but swapped now
+            if graph[index].value.is_none() {
+                graph[index].value = graph[other_idx].value;
+            }
         }
 
         graph[index].size += graph[other_idx].size;
@@ -386,6 +398,32 @@ impl Board {
                 break;
             }
         }
+        results
+    }
+
+    /// Connect from and to and solve resulting graph
+    /// Assumes from has value
+    fn pulse_path(graph: &NodeGraph, from: NodeIndex, to: NodeIndex) -> Vec<NodeGraph> {
+        eprintln!("Pulse Path: {} {}", graph[from], graph[to]);
+        let val = graph[from].value.unwrap();
+        let mut results = Vec::new();
+        for path in all_simple_paths::<Vec::<NodeIndex>, &NodeGraph>(graph, from, to, 1, Some(val as usize)) {
+            let mut g = graph.clone();
+            // Set all nodes along path to value
+            for node in &path {
+                g[*node].value = Some(val);
+            }
+            // Will merge nodes along path
+            if Self::merge_neighbours(&mut g).is_ok() && Board::is_valid(&g) {
+                if let Ok(new_results) = Board::solve_graph(&mut g) {
+                    results.extend(new_results);
+                }
+                if !results.is_empty() {
+                    return results;
+                }
+            }
+        }
+
         results
     }
 
@@ -544,7 +582,7 @@ impl Board {
                         eprintln!(
                             "Node not valid, is_adjacent same value: {} {}",
                             graph[node_idx], graph[adj]
-                        );
+                        );                        
                         return false;
                     }
                 }
