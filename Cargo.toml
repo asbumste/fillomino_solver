@@ -10,6 +10,7 @@ edition = "2018"
 nom = "6.0"
 structopt = "0.3"
 petgraph = "0.5"
+ansi_term = "0.12"
 
 [dev-dependencies]
 rstest = "0.7"
