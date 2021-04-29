@@ -1,4 +1,5 @@
 mod board;
+mod graph;
 mod reader;
 
 use std::path::PathBuf;
